@@ -40,29 +40,32 @@ Open the local URL printed in the terminal, usually `http://localhost:8501`. Kee
 
 ### Fast path: one-click breakdown simulation
 
-1. Open **Ops Console**.
-2. Click **Create and run breakdown demo**. It creates a shipment, assigns a driver, starts the trip, reports a simulated vehicle breakdown, and applies the highest-ranked eligible replacement-driver choice.
-3. Open **Agent Control Tower**. Review the ranked recovery options. Choose a different eligible driver or vehicle if desired, then click **Apply selected recovery**. The shipment ID remains the same.
-4. Open **Driver App** and select the replacement driver shown in the Control Tower.
-5. Click **Start trip**, then **Mark delivered**.
-6. Return to the home page or Control Tower to review the updated shipment and audit events.
+1. Open **Ops Console → Create & assign**.
+2. Click **Create and run breakdown demo**. It creates a shipment, assigns a driver, starts the trip, reports a simulated breakdown, and asks the agent for recovery options. The shipment is not reassigned yet.
+3. Open **Ops Console → Recovery approvals**, inspect the current suggestion, then accept it or reject it with an optional reason. A rejection is logged and advances to the next option; if every option is rejected, the shipment is escalated.
+4. Open **Agent Control Tower** to review the decision and audit log. The same shipment ID is kept.
+5. Open **Driver App** and select the approved replacement driver.
+6. Click **Start trip**, then **Mark delivered**.
+7. Return to the home page or Control Tower to review the updated shipment and audit events.
 
 The demo needs at least two available drivers. After a shipment is delivered, its driver becomes available again.
 
 ### Manual path
 
-1. In **Ops Console**, create a shipment with pickup, destination, deadline, package type, and priority.
+1. In **Ops Console → Create & assign**, create a shipment with pickup, destination, deadline, package type, and priority.
 2. Assign an available driver.
 3. In **Driver App**, select that driver and shipment, then click **Start trip**.
-4. Report an issue and provide a short description. A vehicle breakdown automatically triggers replacement-driver recovery; other issue types show their safe recommendation or dispatcher escalation.
-5. In **Agent Control Tower**, review the recommendations and apply a different eligible action, driver, or vehicle if needed.
-6. The selected driver starts the trip and marks the same shipment delivered.
+4. Report an issue and provide a short description. The agent prepares options but does not change the shipment yet.
+5. In **Ops Console → Recovery approvals**, accept a suggestion to apply it, or reject it to log the decision and request the next available option.
+6. Use **Agent Control Tower** to inspect the reasoning and history. The selected driver starts the trip and marks the same shipment delivered in **Driver App**.
 
 All roles and delivery actions are simulated. The app does not contact real drivers, customers, or shipment systems.
 
 ## 4. Optional Gemini recommendations
 
-Gemini can rank the pre-approved recovery options. The deterministic app logic validates the available choices and performs the state change; Gemini cannot execute actions or invent driver IDs.
+Gemini can rank the pre-approved recovery options, but cannot execute them. Ops must accept an option in **Ops Console** before the driver or route assignment changes. Rejections and approvals, including the optional rejection reason, are written to SQLite and shown in the audit history.
+
+After the first decision for an issue type, later incidents of that type are ranked locally from Ops approval/rejection history. The app skips the Gemini request for those repeat issues, saving tokens while favoring options Ops accepted and lowering options Ops rejected. This is deterministic feedback ranking; it does not train or modify the Gemini model.
 
 Create `.streamlit/secrets.toml` in the project folder and add:
 
@@ -101,7 +104,7 @@ The tests use in-memory SQLite. They do not send requests to Gemini or Google Ma
 - `app.py`: shared home page and shipment overview.
 - `pages/1_Ops_Console.py`: create shipments, assign drivers, run the quick demo.
 - `pages/2_Driver_App.py`: start trips, report issues, mark delivery.
-- `pages/3_Agent_Control_Tower.py`: review/change recovery options and inspect audit events.
+- `pages/3_Agent_Control_Tower.py`: read agent recommendations, Ops decisions, and audit events.
 - `pages/4_Route_Map.py`, `maps_view.py`: Google Maps road routes and selectable alternatives.
 - `engine.py`: shipment lifecycle, recovery policy, driver availability, SQLite, and audit events.
 - `gemini_analysis.py`: optional constrained Gemini ranking and incident analysis.

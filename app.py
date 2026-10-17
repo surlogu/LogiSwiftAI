@@ -8,7 +8,7 @@ from ui_common import configure_page
 configure_page('LogiSwift AI | Control Tower', '🚚')
 st.title('🚚 LogiSwift AI')
 st.caption('Autonomous shipment recovery demo · shared SQLite workflow · Streamlit multipage app')
-st.markdown('Use the separate pages in the left sidebar to act as **Operations**, **Driver**, or **Agent Control Tower**. Each screen reads and updates the same shipment records.')
+st.markdown('Use the left sidebar to open **Ops Console** for shipment setup and approvals, **Driver App** for trip updates, **Agent Control Tower** for the audit trail, or **Road Routes** to compare routes.')
 
 conn=connect()
 shipments=shipment_workflows(conn)
@@ -30,7 +30,7 @@ else:
     st.info('No vendor shipments have been created yet. Open Ops Console to add one.')
 
 st.subheader('Quick demo')
-st.write('In Ops Console, click **Create and run breakdown demo**. It creates and assigns a shipment, starts the trip, reports a vehicle breakdown, and applies the first safe replacement-driver recommendation. Then inspect or change the driver in Agent Control Tower, continue the trip in Driver App, and mark it delivered.')
+st.write('In Ops Console → **Create & assign**, click **Create and run breakdown demo**. Then open **Recovery approvals** and accept or reject the suggestion. The Agent Control Tower shows the audit trail; the replacement driver continues the trip in Driver App after Ops approval.')
 if incidents:
     st.caption(f"{len(incidents)} deterministic simulation incident(s) are in the audit history. Gemini recommendations are optional and never execute actions on their own.")
 conn.close()

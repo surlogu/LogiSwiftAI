@@ -54,6 +54,10 @@ def connect(path=DB_PATH):
     conn.execute('CREATE TABLE IF NOT EXISTS shipment_workflow (shipment_id TEXT PRIMARY KEY, vendor_name TEXT NOT NULL, driver_name TEXT, issue TEXT, agent_status TEXT, agent_action TEXT, vendor_decision TEXT NOT NULL DEFAULT \'No issue\', updated_at TEXT NOT NULL)')
     conn.execute('CREATE TABLE IF NOT EXISTS drivers (driver_id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, vehicle TEXT NOT NULL, available INTEGER NOT NULL DEFAULT 1, reliability REAL NOT NULL, eta_minutes INTEGER NOT NULL, current_location TEXT NOT NULL)')
     conn.execute('CREATE TABLE IF NOT EXISTS workflow_events (id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id TEXT NOT NULL, event_type TEXT NOT NULL, actor TEXT NOT NULL, details TEXT NOT NULL, created_at TEXT NOT NULL)')
+    conn.execute('''CREATE TABLE IF NOT EXISTS decision_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id TEXT NOT NULL, issue TEXT NOT NULL,
+        option_id TEXT NOT NULL, decision TEXT NOT NULL, driver_id TEXT, vehicle_name TEXT,
+        reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)''')
     shipment_columns = {row[1] for row in conn.execute('PRAGMA table_info(custom_shipments)')}
     if 'deadline' not in shipment_columns:
         conn.execute("ALTER TABLE custom_shipments ADD COLUMN deadline TEXT NOT NULL DEFAULT '18:00'")
@@ -66,6 +70,7 @@ def connect(path=DB_PATH):
         'driver_id': 'TEXT', 'vehicle_name': 'TEXT', 'lifecycle_status': "TEXT NOT NULL DEFAULT 'CREATED'",
         'issue_description': "TEXT NOT NULL DEFAULT ''", 'recommendations_json': "TEXT NOT NULL DEFAULT '[]'",
         'selected_action': 'TEXT', 'selected_driver_id': 'TEXT', 'previous_driver_id': 'TEXT',
+        'current_recommendation_id': 'TEXT',
     }
     for column, declaration in migrations.items():
         if column not in workflow_columns:
@@ -131,10 +136,10 @@ def shipment_workflows(conn=None):
     rows = conn.execute('''SELECT s.shipment_id, w.vendor_name, s.origin, s.destination, s.priority, s.status, s.deadline, s.package_type,
         w.driver_name, w.issue, w.agent_status, w.agent_action, w.vendor_decision, w.updated_at,
         w.driver_id, w.vehicle_name, w.lifecycle_status, w.issue_description, w.recommendations_json,
-        w.selected_action, w.selected_driver_id, w.previous_driver_id
+        w.selected_action, w.selected_driver_id, w.previous_driver_id, w.current_recommendation_id
         FROM custom_shipments s JOIN shipment_workflow w ON w.shipment_id=s.shipment_id
         ORDER BY s.shipment_id DESC''').fetchall()
-    columns = ('Shipment','Vendor','Origin','Destination','Priority','Status','Deadline','Package','Driver','Issue','Agent status','Agent decision','Vendor decision','Updated','Driver ID','Vehicle','Lifecycle','Issue description','Recommendations JSON','Selected action','Selected driver ID','Previous Driver ID')
+    columns = ('Shipment','Vendor','Origin','Destination','Priority','Status','Deadline','Package','Driver','Issue','Agent status','Agent decision','Vendor decision','Updated','Driver ID','Vehicle','Lifecycle','Issue description','Recommendations JSON','Selected action','Selected driver ID','Previous Driver ID','Current recommendation ID')
     result = [dict(zip(columns, row)) for row in rows]
     for item in result:
         try: item['Recommendations'] = json.loads(item.pop('Recommendations JSON') or '[]')
@@ -237,11 +242,63 @@ def recovery_options(shipment_id, issue, conn=None):
 def save_recommendations(shipment_id, options, conn=None):
     own=conn is None
     conn=conn or connect()
-    conn.execute('UPDATE shipment_workflow SET recommendations_json=?,updated_at=? WHERE shipment_id=?',(json.dumps(options),datetime.now(timezone.utc).isoformat(),shipment_id))
+    row=conn.execute('SELECT lifecycle_status FROM shipment_workflow WHERE shipment_id=?',(shipment_id,)).fetchone()
+    pending=next((option for option in options if option.get('review_status','PENDING')=='PENDING'),None)
+    conn.execute('UPDATE shipment_workflow SET recommendations_json=?,agent_action=CASE WHEN ? THEN ? ELSE agent_action END,current_recommendation_id=CASE WHEN ? THEN ? ELSE current_recommendation_id END,updated_at=? WHERE shipment_id=?',
+        (json.dumps(options),bool(row and row[0]=='AWAITING_APPROVAL'),pending['action'] if pending else None,
+         bool(row and row[0]=='AWAITING_APPROVAL'),pending['id'] if pending else None,
+         datetime.now(timezone.utc).isoformat(),shipment_id))
     conn.commit()
     if own: conn.close()
 
-def select_recovery(shipment_id, action_id, driver_id=None, vehicle_name=None, conn=None):
+def has_decision_feedback(issue, conn=None):
+    own=conn is None
+    conn=conn or connect()
+    found=conn.execute('SELECT 1 FROM decision_feedback WHERE issue=? LIMIT 1',(issue,)).fetchone() is not None
+    if own: conn.close()
+    return found
+
+def rank_options_from_feedback(issue, options, conn=None):
+    """Use operator history to rank known choices without another Gemini request."""
+    own=conn is None
+    conn=conn or connect()
+    feedback=conn.execute('SELECT option_id,decision,COUNT(*) FROM decision_feedback WHERE issue=? GROUP BY option_id,decision',(issue,)).fetchall()
+    counts={}
+    for option_id,decision,count in feedback:
+        counts.setdefault(option_id,{'APPROVED':0,'REJECTED':0})[decision]=count
+    ranked=[]
+    for original_rank,raw in enumerate(options):
+        option=dict(raw)
+        stats=counts.get(option['id'],{'APPROVED':0,'REJECTED':0})
+        approvals,rejections=stats['APPROVED'],stats['REJECTED']
+        # Beta smoothing keeps one historical vote from making a choice absolute.
+        option['_feedback_score']=(approvals+1)/(approvals+rejections+2)
+        option['_feedback_count']=approvals+rejections
+        option['rank_basis']='operator approvals and rejections'
+        ranked.append((option,original_rank))
+    ranked.sort(key=lambda pair:(-pair[0]['_feedback_score'],-pair[0]['_feedback_count'],pair[1]))
+    result=[]
+    for rank,(option,_) in enumerate(ranked,1):
+        option['rank']=rank
+        option['source']='Learned from Ops decisions (Gemini skipped)'
+        option.pop('_feedback_score',None)
+        option.pop('_feedback_count',None)
+        result.append(option)
+    if own: conn.close()
+    return result
+
+def decision_history(issue=None, conn=None):
+    own=conn is None
+    conn=conn or connect()
+    if issue:
+        rows=conn.execute('SELECT id,shipment_id,issue,option_id,decision,driver_id,vehicle_name,reason,created_at FROM decision_feedback WHERE issue=? ORDER BY id DESC',(issue,)).fetchall()
+    else:
+        rows=conn.execute('SELECT id,shipment_id,issue,option_id,decision,driver_id,vehicle_name,reason,created_at FROM decision_feedback ORDER BY id DESC').fetchall()
+    result=[dict(zip(('id','shipment_id','issue','option_id','decision','driver_id','vehicle','reason','created_at'),row)) for row in rows]
+    if own: conn.close()
+    return result
+
+def _apply_approved_recovery(shipment_id, action_id, driver_id=None, vehicle_name=None, conn=None):
     own=conn is None
     conn=conn or connect()
     workflow=conn.execute('SELECT driver_id FROM shipment_workflow WHERE shipment_id=?',(shipment_id,)).fetchone()
@@ -278,6 +335,69 @@ def select_recovery(shipment_id, action_id, driver_id=None, vehicle_name=None, c
     conn.commit()
     if own: conn.close()
 
+def approve_recommendation(shipment_id, action_id, driver_id=None, vehicle_name=None, conn=None):
+    own=conn is None
+    conn=conn or connect()
+    workflow=conn.execute('SELECT issue,lifecycle_status,recommendations_json,current_recommendation_id FROM shipment_workflow WHERE shipment_id=?',(shipment_id,)).fetchone()
+    if not workflow or workflow[1]!='AWAITING_APPROVAL':
+        if own: conn.close()
+        raise ValueError('This shipment is not waiting for Ops approval')
+    options=json.loads(workflow[2] or '[]')
+    option=next((item for item in options if item['id']==action_id and item.get('review_status','PENDING')=='PENDING'),None)
+    if not option:
+        if own: conn.close()
+        raise ValueError('That recommendation is no longer pending')
+    chosen_driver=driver_id or option.get('driver_id')
+    conn.execute('INSERT INTO decision_feedback(shipment_id,issue,option_id,decision,driver_id,vehicle_name,reason,created_at) VALUES(?,?,?,?,?,?,?,?)',
+                 (shipment_id,workflow[0],action_id,'APPROVED',chosen_driver,vehicle_name or option.get('vehicle') or '',
+                  'Approved by Ops and applied',datetime.now(timezone.utc).isoformat()))
+    option['review_status']='APPROVED'
+    for other in options:
+        if other['id']!=action_id and other.get('review_status','PENDING')=='PENDING':
+            other['review_status']='NOT_SELECTED'
+    conn.execute('UPDATE shipment_workflow SET recommendations_json=? WHERE shipment_id=?',(json.dumps(options),shipment_id))
+    record_workflow_event(conn,shipment_id,'RECOVERY_APPROVED','Ops',
+                          f"Approved {option['action']} · driver {chosen_driver or 'none'} · vehicle {vehicle_name or option.get('vehicle') or 'none'}")
+    # State transition is private to the Ops approval path.
+    _apply_approved_recovery(shipment_id,action_id,chosen_driver,vehicle_name,conn)
+    if own: conn.close()
+
+def reject_recommendation(shipment_id, action_id, reason='', conn=None):
+    own=conn is None
+    conn=conn or connect()
+    workflow=conn.execute('SELECT issue,lifecycle_status,recommendations_json,current_recommendation_id FROM shipment_workflow WHERE shipment_id=?',(shipment_id,)).fetchone()
+    if not workflow or workflow[1]!='AWAITING_APPROVAL':
+        if own: conn.close()
+        raise ValueError('This shipment is not waiting for Ops approval')
+    options=json.loads(workflow[2] or '[]')
+    option=next((item for item in options if item['id']==action_id and item.get('review_status','PENDING')=='PENDING'),None)
+    if not option:
+        if own: conn.close()
+        raise ValueError('That recommendation is no longer pending')
+    reason=reason.strip()[:500] or 'Rejected by Ops; no reason entered.'
+    conn.execute('INSERT INTO decision_feedback(shipment_id,issue,option_id,decision,driver_id,vehicle_name,reason,created_at) VALUES(?,?,?,?,?,?,?,?)',
+                 (shipment_id,workflow[0],action_id,'REJECTED',option.get('driver_id'),option.get('vehicle') or '',reason,datetime.now(timezone.utc).isoformat()))
+    option['review_status']='REJECTED'
+    option['rejection_reason']=reason
+    pending=[item for item in options if item.get('review_status','PENDING')=='PENDING']
+    pending=rank_options_from_feedback(workflow[0],pending,conn)
+    # Keep reviewed entries for audit, then place the new suggestion first among pending choices.
+    reviewed=[item for item in options if item.get('review_status')!='PENDING']
+    options=reviewed+pending
+    next_option=pending[0] if pending else None
+    if next_option:
+        conn.execute('UPDATE shipment_workflow SET recommendations_json=?,agent_action=?,current_recommendation_id=?,vendor_decision=?,updated_at=? WHERE shipment_id=?',
+                     (json.dumps(options),next_option['action'],next_option['id'],'Pending Ops approval',datetime.now(timezone.utc).isoformat(),shipment_id))
+        record_workflow_event(conn,shipment_id,'RECOVERY_REJECTED','Ops',f"Rejected {option['action']}: {reason}. Next recommendation: {next_option['action']}.")
+    else:
+        conn.execute("UPDATE shipment_workflow SET recommendations_json=?,agent_action=NULL,current_recommendation_id=NULL,agent_status='ESCALATED_TO_HUMAN',lifecycle_status='ESCALATED_TO_HUMAN',vendor_decision='All recommendations rejected',updated_at=? WHERE shipment_id=?",
+                     (json.dumps(options),datetime.now(timezone.utc).isoformat(),shipment_id))
+        conn.execute("UPDATE custom_shipments SET status='Escalated to dispatcher' WHERE shipment_id=?",(shipment_id,))
+        record_workflow_event(conn,shipment_id,'ALL_RECOVERIES_REJECTED','Ops',f"All safe recovery options were rejected. Last reason: {reason}")
+    conn.commit()
+    if own: conn.close()
+    return next_option
+
 def report_driver_update(shipment_id, driver_name, issue, conn=None, description=''):
     if driver_name not in DRIVERS:
         raise ValueError('Choose a driver from the list')
@@ -300,37 +420,38 @@ def report_driver_update(shipment_id, driver_name, issue, conn=None, description
     if scenario and existing_workflow and existing_workflow[0] != 'IN_TRANSIT':
         if own: conn.close()
         raise ValueError('Start the trip before reporting an issue')
-    result = recover(shipment_id, scenario, conn) if scenario else None
+    result = None
     action = None
     agent_status = None
     vendor_decision = 'No issue'
-    if result:
-        agent_status = result['status']
-        actions = [event['action'] for event in result['timeline'] if event.get('stage') == 'ACT + VERIFY']
-        action = ', '.join(actions) if actions else 'Escalation required'
-        vendor_decision = 'Pending vendor approval'
-        conn.execute('UPDATE custom_shipments SET status=? WHERE shipment_id=?', ('At Risk', shipment_id))
+    opts=[]
+    if scenario:
         opts = recovery_options(shipment_id, issue, conn)
+    if scenario and opts:
+        agent_status = 'AWAITING_APPROVAL'
+        action = opts[0]['action']
+        vendor_decision = 'Pending Ops approval'
+        conn.execute("UPDATE custom_shipments SET status='Awaiting Ops approval' WHERE shipment_id=?",(shipment_id,))
+        for option in opts: option['review_status']='PENDING'
         conn.execute('UPDATE shipment_workflow SET recommendations_json=? WHERE shipment_id=?',(json.dumps(opts),shipment_id))
+    elif scenario:
+        agent_status='ESCALATED_TO_HUMAN'
+        vendor_decision='Escalated to dispatcher'
+        conn.execute("UPDATE custom_shipments SET status='Escalated to dispatcher' WHERE shipment_id=?",(shipment_id,))
     else:
-        conn.execute("UPDATE custom_shipments SET status='Normal' WHERE shipment_id=?", (shipment_id,))
-    conn.execute('''UPDATE shipment_workflow SET driver_name=?, driver_id=COALESCE(?,driver_id), vehicle_name=COALESCE(?,vehicle_name), issue=?, issue_description=?, agent_status=?, agent_action=?, lifecycle_status=CASE WHEN ? IS NULL THEN 'DRIVER_ASSIGNED' ELSE 'ISSUE_REPORTED' END,
+        conn.execute("UPDATE custom_shipments SET status='Normal' WHERE shipment_id=?",(shipment_id,))
+    conn.execute('''UPDATE shipment_workflow SET driver_name=?, driver_id=COALESCE(?,driver_id), vehicle_name=COALESCE(?,vehicle_name), issue=?, issue_description=?, agent_status=?, agent_action=?, lifecycle_status=CASE WHEN ? IS NULL THEN 'DRIVER_ASSIGNED' WHEN ?='AWAITING_APPROVAL' THEN 'AWAITING_APPROVAL' WHEN ?='ESCALATED_TO_HUMAN' THEN 'ESCALATED_TO_HUMAN' ELSE 'ISSUE_REPORTED' END,
         vendor_decision=?, updated_at=? WHERE shipment_id=?''',
-        (driver_name, driver_row[0] if driver_row else None, driver_row[1] if driver_row else None, issue, description, agent_status, action, scenario, vendor_decision, datetime.now(timezone.utc).isoformat(), shipment_id))
+        (driver_name, driver_row[0] if driver_row else None, driver_row[1] if driver_row else None, issue, description, agent_status, action, scenario, agent_status, agent_status, vendor_decision, datetime.now(timezone.utc).isoformat(), shipment_id))
     if scenario:
         conn.execute('UPDATE drivers SET available=0 WHERE name=?',(driver_name,))
         record_workflow_event(conn,shipment_id,'ISSUE_REPORTED',driver_name,f'{issue}: {description or "No note provided"}')
-        if issue=='Vehicle breakdown' and opts:
-            # Breakdown recovery is automatic; a dispatcher can select another option later.
-            top=opts[0]
-            select_recovery(shipment_id,top['id'],top.get('driver_id'),top.get('vehicle'),conn)
-        elif issue=='Vehicle breakdown':
-            conn.execute("UPDATE shipment_workflow SET lifecycle_status='ESCALATED_TO_HUMAN', vendor_decision='Escalated to dispatcher' WHERE shipment_id=?",(shipment_id,))
-            conn.execute("UPDATE custom_shipments SET status='Escalated to dispatcher' WHERE shipment_id=?",(shipment_id,))
+        if agent_status=='AWAITING_APPROVAL':
+            conn.execute('UPDATE shipment_workflow SET current_recommendation_id=? WHERE shipment_id=?',(opts[0]['id'],shipment_id))
     conn.commit()
     if own:
         conn.close()
-    return result
+    return {'status':agent_status or 'NO_ISSUE','shipment_id':shipment_id,'recommendations':opts}
 
 def set_vendor_decision(shipment_id, decision, conn=None):
     if decision not in ('Approved', 'Rejected'):
