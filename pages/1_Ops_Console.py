@@ -32,7 +32,7 @@ conn = connect()
 create_tab, recovery_tab, monitor_tab = st.tabs([
     '📦 Create & assign',
     '🧠 Recovery approvals',
-    '🚚 Shipments & drivers',
+    '🚚 Shipment monitor',
 ])
 
 with create_tab:
@@ -105,7 +105,7 @@ with create_tab:
             available = driver_records(conn, available_only=True)
             if len(available) < 2:
                 raise ValueError('At least two drivers must be available. Complete another active shipment first.')
-            demo_id = add_shipment('Chennai', 'Bengaluru', 'High', 'Normal', 'Demo Vendor', conn)
+            demo_id = add_shipment('Chennai', 'Bengaluru', 'High', 'Normal', 'Demo Vendor', conn, is_demo=True)
             original = next((driver for driver in available if driver['driver_id'] == 'DRIVER_A'), available[0])
             assign_driver(demo_id, original['driver_id'], conn)
             start_trip(demo_id, original['driver_id'], conn)
@@ -128,11 +128,17 @@ with recovery_tab:
     st.subheader('Review and approve agent recommendations')
     st.caption('Accept applies the selected recovery. Reject records your reason and advances to the next option. The shipment is unchanged until you accept.')
     pending_items = [row for row in shipment_workflows(conn) if row['Lifecycle'] == 'AWAITING_APPROVAL']
+    available_driver_ids = {driver['driver_id'] for driver in driver_records(conn, available_only=True)}
     if not pending_items:
         st.info('There are no recovery recommendations waiting for review.')
     for item in pending_items:
-        options = [option for option in item['Recommendations'] if option.get('review_status', 'PENDING') == 'PENDING']
+        options = [
+            option for option in item['Recommendations']
+            if option.get('review_status', 'PENDING') == 'PENDING'
+            and (not option.get('driver_id') or option['driver_id'] in available_driver_ids)
+        ]
         if not options:
+            st.warning(f"{item['Shipment']}: no eligible recovery option is currently available. A replacement driver already assigned elsewhere is hidden; review again when a driver becomes available.")
             continue
         current_id = item['Current recommendation ID']
         current = next((option for option in options if option['id'] == current_id), options[0])
@@ -175,6 +181,7 @@ with recovery_tab:
                 current_vehicle = selected.get('vehicle') or item['Vehicle'] or VEHICLES[0]
                 vehicle = st.selectbox('Vehicle', VEHICLES, index=VEHICLES.index(current_vehicle) if current_vehicle in VEHICLES else 0)
                 rejection_reason = st.text_input('Reason if rejecting', placeholder='Optional: unsafe route, unavailable vehicle, ETA too high…')
+                driver_message = st.text_input('Message to driver', placeholder='Example: Stay at the safe location; Ops is arranging the alternate route.')
                 yes, no = st.columns(2)
                 with yes:
                     accept = st.form_submit_button('✓ Accept and apply', type='primary', use_container_width=True)
@@ -183,14 +190,14 @@ with recovery_tab:
             if accept:
                 try:
                     chosen_id = f"replace:{driver_id}" if selected_id.startswith('replace:') else selected_id
-                    approve_recommendation(item['Shipment'], chosen_id, driver_id, vehicle, conn)
-                    st.success('Ops approval recorded and the selected recovery was applied.')
+                    approve_recommendation(item['Shipment'], chosen_id, driver_id, vehicle, conn, driver_message=driver_message)
+                    st.success('Approval recorded, recovery applied, and the message saved for the assigned driver.')
                     st.rerun()
                 except ValueError as exc:
                     st.error(str(exc))
             if reject:
                 try:
-                    next_option = reject_recommendation(item['Shipment'], current['id'], rejection_reason, conn)
+                    next_option = reject_recommendation(item['Shipment'], current['id'], rejection_reason, conn, driver_message=driver_message)
                     if next_option:
                         st.info(f"Rejection recorded. Next suggestion: {next_option['action']}.")
                     else:
@@ -218,7 +225,6 @@ with monitor_tab:
         )
     else:
         st.info('No shipments yet. Create a shipment in the first tab.')
-    st.subheader('Driver availability')
-    st.dataframe(pd.DataFrame(driver_records(conn)), use_container_width=True, hide_index=True)
+    st.info('Open **Driver Roster** in the sidebar to see driver availability. Only available drivers appear as recovery replacements.')
 
 conn.close()

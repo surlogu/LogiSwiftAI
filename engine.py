@@ -63,6 +63,8 @@ def connect(path=DB_PATH):
         conn.execute("ALTER TABLE custom_shipments ADD COLUMN deadline TEXT NOT NULL DEFAULT '18:00'")
     if 'package_type' not in shipment_columns:
         conn.execute("ALTER TABLE custom_shipments ADD COLUMN package_type TEXT NOT NULL DEFAULT 'general'")
+    if 'is_demo' not in shipment_columns:
+        conn.execute('ALTER TABLE custom_shipments ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0')
     driver_seed = [('DRIVER_A','Ravi Kumar','Bike 01',1,.86,12,'T. Nagar'),('DRIVER_B','Suresh','Bike 02',1,.96,18,'Adyar'),('DRIVER_C','Meena','Van 01',1,.91,24,'Guindy'),('DRIVER_D','Arun','Van 02',1,.88,15,'Velachery')]
     conn.executemany('INSERT OR IGNORE INTO drivers VALUES (?,?,?,?,?,?,?)', driver_seed)
     workflow_columns = {row[1] for row in conn.execute('PRAGMA table_info(shipment_workflow)')}
@@ -70,7 +72,7 @@ def connect(path=DB_PATH):
         'driver_id': 'TEXT', 'vehicle_name': 'TEXT', 'lifecycle_status': "TEXT NOT NULL DEFAULT 'CREATED'",
         'issue_description': "TEXT NOT NULL DEFAULT ''", 'recommendations_json': "TEXT NOT NULL DEFAULT '[]'",
         'selected_action': 'TEXT', 'selected_driver_id': 'TEXT', 'previous_driver_id': 'TEXT',
-        'current_recommendation_id': 'TEXT',
+        'current_recommendation_id': 'TEXT', 'driver_message': "TEXT NOT NULL DEFAULT ''",
     }
     for column, declaration in migrations.items():
         if column not in workflow_columns:
@@ -82,14 +84,8 @@ def connect(path=DB_PATH):
 def sample_shipments(conn=None):
     own = conn is None
     conn = conn or connect()
-    cities = [('Chennai','Bengaluru'),('Mumbai','Pune'),('Hyderabad','Vijayawada'),('Delhi','Jaipur'),('Coimbatore','Kochi')]
-    result=[]
-    for i in range(1,21):
-        src,dst=cities[(i-1)%len(cities)]
-        scenario=list(SCENARIOS)[(i-1)%len(SCENARIOS)]
-        result.append({'Shipment':f'LS{1000+i}', 'Origin':src,'Destination':dst,'Priority':'High' if i%4==0 else 'Normal','Status':'At Risk' if i%3==0 else 'In Transit','Scenario':scenario})
     rows = conn.execute('SELECT shipment_id, origin, destination, priority, status, scenario FROM custom_shipments ORDER BY shipment_id').fetchall()
-    result.extend(dict(zip(('Shipment','Origin','Destination','Priority','Status','Scenario'), row)) for row in rows)
+    result=[dict(zip(('Shipment','Origin','Destination','Priority','Status','Scenario'), row)) for row in rows]
     liked_ids = {row[0] for row in conn.execute('SELECT shipment_id FROM shipment_likes WHERE liked=1').fetchall()}
     for shipment in result:
         shipment['Liked'] = shipment['Shipment'] in liked_ids
@@ -97,7 +93,7 @@ def sample_shipments(conn=None):
         conn.close()
     return result
 
-def add_shipment(origin, destination, priority='Normal', status='Normal', vendor_name='Vendor', conn=None, deadline='18:00', package_type='general'):
+def add_shipment(origin, destination, priority='Normal', status='Normal', vendor_name='Vendor', conn=None, deadline='18:00', package_type='general', is_demo=False):
     if origin not in CITIES or destination not in CITIES:
         raise ValueError('Choose an origin and destination from the supported cities')
     if origin == destination:
@@ -121,7 +117,7 @@ def add_shipment(origin, destination, priority='Normal', status='Normal', vendor
     existing = conn.execute('SELECT shipment_id FROM custom_shipments').fetchall()
     numbers = [int(row[0][2:]) for row in existing if row[0].startswith('LS') and row[0][2:].isdigit()]
     shipment_id = f'LS{max([1020, *numbers]) + 1}'
-    conn.execute('INSERT INTO custom_shipments (shipment_id, origin, destination, priority, status, scenario, deadline, package_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (shipment_id, origin, destination, priority, status, 'Custom route',deadline,package_type))
+    conn.execute('INSERT INTO custom_shipments (shipment_id, origin, destination, priority, status, scenario, deadline, package_type, is_demo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', (shipment_id, origin, destination, priority, status, 'Custom route',deadline,package_type,int(is_demo)))
     conn.execute('INSERT INTO shipment_workflow (shipment_id, vendor_name, vendor_decision, updated_at) VALUES (?, ?, ?, ?)', (shipment_id, vendor_name, 'No issue', datetime.now(timezone.utc).isoformat()))
     conn.execute("UPDATE shipment_workflow SET lifecycle_status='CREATED' WHERE shipment_id=?", (shipment_id,))
     record_workflow_event(conn,shipment_id,'CREATED',vendor_name,f'{origin} → {destination}')
@@ -136,10 +132,10 @@ def shipment_workflows(conn=None):
     rows = conn.execute('''SELECT s.shipment_id, w.vendor_name, s.origin, s.destination, s.priority, s.status, s.deadline, s.package_type,
         w.driver_name, w.issue, w.agent_status, w.agent_action, w.vendor_decision, w.updated_at,
         w.driver_id, w.vehicle_name, w.lifecycle_status, w.issue_description, w.recommendations_json,
-        w.selected_action, w.selected_driver_id, w.previous_driver_id, w.current_recommendation_id
+        w.selected_action, w.selected_driver_id, w.previous_driver_id, w.current_recommendation_id, w.driver_message
         FROM custom_shipments s JOIN shipment_workflow w ON w.shipment_id=s.shipment_id
         ORDER BY s.shipment_id DESC''').fetchall()
-    columns = ('Shipment','Vendor','Origin','Destination','Priority','Status','Deadline','Package','Driver','Issue','Agent status','Agent decision','Vendor decision','Updated','Driver ID','Vehicle','Lifecycle','Issue description','Recommendations JSON','Selected action','Selected driver ID','Previous Driver ID','Current recommendation ID')
+    columns = ('Shipment','Vendor','Origin','Destination','Priority','Status','Deadline','Package','Driver','Issue','Agent status','Agent decision','Vendor decision','Updated','Driver ID','Vehicle','Lifecycle','Issue description','Recommendations JSON','Selected action','Selected Driver ID','Previous Driver ID','Current recommendation ID','Driver message')
     result = [dict(zip(columns, row)) for row in rows]
     for item in result:
         try: item['Recommendations'] = json.loads(item.pop('Recommendations JSON') or '[]')
@@ -335,7 +331,7 @@ def _apply_approved_recovery(shipment_id, action_id, driver_id=None, vehicle_nam
     conn.commit()
     if own: conn.close()
 
-def approve_recommendation(shipment_id, action_id, driver_id=None, vehicle_name=None, conn=None):
+def approve_recommendation(shipment_id, action_id, driver_id=None, vehicle_name=None, conn=None, driver_message=''):
     own=conn is None
     conn=conn or connect()
     workflow=conn.execute('SELECT issue,lifecycle_status,recommendations_json,current_recommendation_id FROM shipment_workflow WHERE shipment_id=?',(shipment_id,)).fetchone()
@@ -360,9 +356,14 @@ def approve_recommendation(shipment_id, action_id, driver_id=None, vehicle_name=
                           f"Approved {option['action']} · driver {chosen_driver or 'none'} · vehicle {vehicle_name or option.get('vehicle') or 'none'}")
     # State transition is private to the Ops approval path.
     _apply_approved_recovery(shipment_id,action_id,chosen_driver,vehicle_name,conn)
+    driver_message=driver_message.strip()[:500] or f"Ops approved: {option['action']}. Follow the updated shipment assignment in Driver App."
+    assigned=conn.execute('SELECT driver_id FROM shipment_workflow WHERE shipment_id=?',(shipment_id,)).fetchone()
+    conn.execute('UPDATE shipment_workflow SET driver_message=? WHERE shipment_id=?',(driver_message,shipment_id))
+    record_workflow_event(conn,shipment_id,'DRIVER_MESSAGE_SENT','Ops',f"Message sent to {assigned[0] if assigned else 'assigned driver'}: {driver_message}")
+    conn.commit()
     if own: conn.close()
 
-def reject_recommendation(shipment_id, action_id, reason='', conn=None):
+def reject_recommendation(shipment_id, action_id, reason='', conn=None, driver_message=''):
     own=conn is None
     conn=conn or connect()
     workflow=conn.execute('SELECT issue,lifecycle_status,recommendations_json,current_recommendation_id FROM shipment_workflow WHERE shipment_id=?',(shipment_id,)).fetchone()
@@ -394,9 +395,32 @@ def reject_recommendation(shipment_id, action_id, reason='', conn=None):
                      (json.dumps(options),datetime.now(timezone.utc).isoformat(),shipment_id))
         conn.execute("UPDATE custom_shipments SET status='Escalated to dispatcher' WHERE shipment_id=?",(shipment_id,))
         record_workflow_event(conn,shipment_id,'ALL_RECOVERIES_REJECTED','Ops',f"All safe recovery options were rejected. Last reason: {reason}")
+    driver_message=driver_message.strip()[:500] or (
+        f"Ops rejected the suggestion ({option['action']}). Stay in a safe location while the next recovery is reviewed."
+        if next_option else 'All recovery options were rejected. Stay in a safe location and wait for dispatcher instructions.'
+    )
+    driver=conn.execute('SELECT driver_id FROM shipment_workflow WHERE shipment_id=?',(shipment_id,)).fetchone()
+    conn.execute('UPDATE shipment_workflow SET driver_message=? WHERE shipment_id=?',(driver_message,shipment_id))
+    record_workflow_event(conn,shipment_id,'DRIVER_MESSAGE_SENT','Ops',f"Message sent to {driver[0] if driver else 'assigned driver'}: {driver_message}")
     conn.commit()
     if own: conn.close()
     return next_option
+
+def reset_workspace(conn=None):
+    """Clear all saved shipment state and release every seeded driver for reassignment."""
+    own=conn is None
+    conn=conn or connect()
+    shipment_count=conn.execute('SELECT COUNT(*) FROM custom_shipments').fetchone()[0]
+    conn.execute('DELETE FROM workflow_events')
+    conn.execute('DELETE FROM decision_feedback')
+    conn.execute('DELETE FROM incidents')
+    conn.execute('DELETE FROM shipment_likes')
+    conn.execute('DELETE FROM shipment_workflow')
+    conn.execute('DELETE FROM custom_shipments')
+    conn.execute('UPDATE drivers SET available=1')
+    conn.commit()
+    if own: conn.close()
+    return shipment_count
 
 def report_driver_update(shipment_id, driver_name, issue, conn=None, description=''):
     if driver_name not in DRIVERS:

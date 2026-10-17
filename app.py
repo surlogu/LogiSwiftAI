@@ -8,7 +8,7 @@ from ui_common import configure_page
 configure_page('LogiSwift AI | Control Tower', '🚚')
 st.title('🚚 LogiSwift AI')
 st.caption('Autonomous shipment recovery demo · shared SQLite workflow · Streamlit multipage app')
-st.markdown('Use the left sidebar to open **Ops Console** for shipment setup and approvals, **Driver App** for trip updates, **Agent Control Tower** for the audit trail, or **Road Routes** to compare routes.')
+st.markdown('Use the left sidebar to open **Ops Console** for shipment setup and approvals, **Driver App** for trip updates and Ops messages, **Driver Roster** for driver availability and workspace reset, **Agent Control Tower** for the audit trail, or **Road Routes** to compare routes.')
 
 conn=connect()
 shipments=shipment_workflows(conn)

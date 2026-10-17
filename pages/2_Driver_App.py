@@ -14,7 +14,7 @@ drivers=driver_records(conn)
 driver_names={d['driver_id']:d['name'] for d in drivers}
 driver_id=st.selectbox('Signed-in driver (simulation)',[d['driver_id'] for d in drivers],format_func=lambda did:f"{driver_names[did]} · {did}")
 workflows=shipment_workflows(conn)
-assigned=[r for r in workflows if r['Driver ID']==driver_id and r['Lifecycle'] not in ('DELIVERED','ESCALATED_TO_HUMAN')]
+assigned=[r for r in workflows if r['Driver ID']==driver_id and r['Lifecycle'] not in ('DELIVERED','DEMO_RESET')]
 
 if not assigned:
     st.info('No active shipment is assigned to this driver. Assign one in Ops Console or use the one-click demo.')
@@ -24,8 +24,12 @@ else:
         st.subheader(f"Shipment {item['Shipment']}")
         st.write(f"**{item['Origin']} → {item['Destination']}** · {item['Package']} · deadline {item['Deadline']} · {item['Priority']} priority")
         st.write(f"Vehicle: **{item['Vehicle'] or 'Not assigned'}** · Lifecycle: **{item['Lifecycle']}**")
+        if item['Driver message']:
+            st.info(f"**Ops message:** {item['Driver message']}")
         if item['Lifecycle'] == 'AWAITING_APPROVAL':
             st.info('Your issue is waiting for Ops approval. Check with Ops Console before continuing this shipment.')
+        elif item['Lifecycle'] == 'ESCALATED_TO_HUMAN':
+            st.warning('Ops escalated this issue. Follow the message above and wait for dispatcher instructions.')
         if item['Lifecycle'] in ('DRIVER_ASSIGNED','DRIVER_REASSIGNED','RECOVERY_APPROVED'):
             if st.button('▶ Start trip',key=f"start_{item['Shipment']}",type='primary',use_container_width=True):
                 try: start_trip(item['Shipment'],driver_id,conn); st.rerun()
