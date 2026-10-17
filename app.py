@@ -8,7 +8,42 @@ from gemini_analysis import analyze_incident
 from maps_view import show_shipment_map
 
 st.set_page_config(page_title='LogiSwift AI | Autonomous Control Tower',page_icon='🚚',layout='wide')
-st.markdown('''<style>.stApp{background:#0b1220;color:#e5edf7}div[data-testid="stMetric"]{background:#172238;border:1px solid #293953;border-radius:14px;padding:15px}.block-container{padding-top:2rem}h1,h2,h3{color:#f3f8ff}</style>''',unsafe_allow_html=True)
+st.markdown('''<style>
+:root { color-scheme: dark; }
+.stApp { background: #0b1220; color: #e8eef7; }
+.block-container { padding-top: 2rem; }
+h1, h2, h3, h4 { color: #f8fafc !important; }
+p, [data-testid="stMarkdownContainer"] { color: #dbe5f2; }
+[data-testid="stCaptionContainer"],
+[data-testid="stCaptionContainer"] *,
+[data-testid="stWidgetLabel"],
+[data-testid="stWidgetLabel"] *,
+label, label * { color: #cbd5e1 !important; opacity: 1 !important; }
+[data-testid="stMetric"] {
+  background: #172238;
+  border: 1px solid #3a4b67;
+  border-radius: 14px;
+  padding: 15px;
+}
+[data-testid="stMetricLabel"], [data-testid="stMetricLabel"] *,
+[data-testid="stMetricValue"], [data-testid="stMetricValue"] * {
+  color: #f1f5f9 !important;
+  opacity: 1 !important;
+}
+[data-testid="stTabs"] button[data-baseweb="tab"] { color: #cbd5e1 !important; }
+[data-testid="stTabs"] button[data-baseweb="tab"][aria-selected="true"] {
+  color: #ffffff !important;
+}
+[data-testid="stAlert"] p, [data-testid="stAlert"] [data-testid="stMarkdownContainer"] {
+  color: #e2e8f0 !important;
+}
+[data-testid="stBaseButton-secondary"] {
+  background: #24334a;
+  border: 1px solid #475a77;
+  color: #f8fafc !important;
+}
+[data-testid="stBaseButton-secondary"] * { color: #f8fafc !important; }
+</style>''',unsafe_allow_html=True)
 st.title('🚚 LogiSwift AI')
 st.caption('Autonomous Logistics Control Tower • Observe → Reason → Act → Verify → Learn • Simulation demo')
 conn=connect()
@@ -31,6 +66,7 @@ with tab1:
     if st.button('🚀 Execute autonomous recovery',type='primary',use_container_width=True):
         result=recover(shipment,scenario,conn)
         st.session_state['last_result']=result
+        st.session_state['gemini_batch_notice']=False
         api_key=os.getenv('GEMINI_API_KEY')
         if not api_key:
             try: api_key=st.secrets.get('GEMINI_API_KEY')
@@ -38,11 +74,24 @@ with tab1:
         st.session_state['gemini_configured']=bool(api_key)
         simulated_ai_outage=scenario=='AI API outage'
         st.session_state['gemini_skipped_for_outage']=simulated_ai_outage
-        st.session_state['last_gemini_analysis']=None if simulated_ai_outage else analyze_incident(scenario,result,api_key)
+        if simulated_ai_outage:
+            analysis, gemini_error = None, None
+        else:
+            analysis, gemini_error = analyze_incident(scenario,result,api_key)
+        st.session_state['last_gemini_analysis']=analysis
+        st.session_state['last_gemini_error']=gemini_error
         st.rerun()
     if st.button('▶ Run all six demo scenarios',use_container_width=True):
         for i,s in enumerate(SCENARIOS): recover(f'LS{1001+i}',s,conn)
+        st.session_state['last_result']=None
+        st.session_state['last_gemini_analysis']=None
+        st.session_state['last_gemini_error']=None
+        st.session_state['gemini_configured']=False
+        st.session_state['gemini_skipped_for_outage']=False
+        st.session_state['gemini_batch_notice']=True
         st.rerun()
+    if st.session_state.get('gemini_batch_notice',False):
+        st.info('All six demo scenarios were recorded. Gemini analysis runs for a single incident; use “Execute autonomous recovery” to request it.')
     result=st.session_state.get('last_result')
     if result:
         (st.success if result['status']=='RECOVERED' else st.warning)(f"{result['status']} | {result['attempts']} action(s) | {result['latency_ms']} ms")
@@ -57,7 +106,8 @@ with tab1:
         elif st.session_state.get('gemini_skipped_for_outage',False):
             st.info('Gemini analysis was skipped because this scenario simulates an AI API outage.')
         elif st.session_state.get('gemini_configured',False):
-            st.info('Gemini analysis is currently unavailable. The deterministic recovery result is unchanged.')
+            detail=st.session_state.get('last_gemini_error') or 'No diagnostic was recorded for this result. Click “Execute autonomous recovery” to make a fresh Gemini request.'
+            st.warning(f'Gemini analysis failed: {detail} The deterministic recovery result is unchanged.')
         else:
             st.info('Set GEMINI_API_KEY to enable Gemini analysis. Recovery works without it.')
 with tab2:
