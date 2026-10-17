@@ -1,3 +1,18 @@
+# Python environments and generated files
 .venv/
+.venv*/
+venv/
 __pycache__/
 *.py[cod]
+.pytest_cache/
+
+# Local credentials
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Local SQLite data
+*.db
+*.sqlite
+*.sqlite3
