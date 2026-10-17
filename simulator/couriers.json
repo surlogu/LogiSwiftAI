@@ -1,0 +1,29 @@
+[
+  {
+    "id": "COURIER_A",
+    "name": "Chennai Quick",
+    "vehicle": "bike",
+    "capacity": 5,
+    "available": true,
+    "reliability": 0.72,
+    "base_eta_minutes": 55
+  },
+  {
+    "id": "COURIER_B",
+    "name": "Adyar Express Med",
+    "vehicle": "van",
+    "capacity": 10,
+    "available": true,
+    "reliability": 0.94,
+    "base_eta_minutes": 48
+  },
+  {
+    "id": "COURIER_C",
+    "name": "Marina Fast Track",
+    "vehicle": "bike",
+    "capacity": 4,
+    "available": true,
+    "reliability": 0.86,
+    "base_eta_minutes": 62
+  }
+]
