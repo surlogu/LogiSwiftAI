@@ -163,8 +163,10 @@ GOOGLE_MAPS_API_KEY = "your Maps browser key"
 
 - Install is included in `requirements.txt` as `google-genai`.
 - The current default model in `gemini_analysis.py` is `gemini-3.8-flash`; override it with the `GEMINI_MODEL` environment variable before starting Streamlit.
+- After a rate-limit or transient error, the app tries `gemini-3.6-flash` and then `gemini-3.5-flash-lite`. Set `GEMINI_FALLBACK_MODELS` to a comma-separated model list to override the fallbacks, or set it to an empty value to disable them.
+- Fallback only helps when another model has remaining model-specific capacity. Google also applies quotas at project level, so a project-wide/daily quota can block every model; the app then keeps deterministic recommendations and reports the failure. See Google's [rate limits](https://ai.google.dev/gemini-api/docs/rate-limits) and [API error guidance](https://ai.google.dev/gemini-api/docs/api-errors).
 - The app uses the API to rank the engine's candidate list. It does not create driver IDs, invent executable actions, or directly change shipment state.
-- The model ID and availability can change. Check the [official Gemini API model list](https://ai.google.dev/gemini-api/docs/models) if the request returns an API/model error.
+- Model IDs and availability can change. Check the [official Gemini API model list](https://ai.google.dev/gemini-api/docs/models) if the request returns an API/model error.
 - Without a key, on API error, or when feedback ranking applies, the app continues with local rules and SQLite feedback.
 
 Linux/macOS model override:
@@ -195,7 +197,7 @@ Activate the virtual environment, then from the project root run:
 python -m pytest -q
 ```
 
-The tests use in-memory SQLite and do not call Gemini or Google Maps. They cover deterministic recovery outcomes and retry limits, recovery feedback, Ops approval before reassignment, rejection and local ranking, delivery completion, and trip-state validation.
+The tests use in-memory SQLite or a fake Gemini client; they do not call Gemini or Google Maps. They cover deterministic recovery outcomes and retry limits, recovery feedback, Ops approval before reassignment, rejection and local ranking, delivery completion, trip-state validation, and retrying a second model after a rate-limit response.
 
 For a manual UI smoke check:
 
@@ -325,5 +327,6 @@ pages/3_Agent_Control_Tower.py Recommendations and audit view
 pages/4_Route_Map.py           Saved-shipment route comparison
 pages/5_Driver_Roster.py       Availability and workspace reset
 tests/test_engine.py           SQLite-backed recovery workflow tests
+tests/test_gemini_fallback.py  Simulated Gemini rate-limit/fallback tests
 requirements.txt               Python dependencies
 ```
