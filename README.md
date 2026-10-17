@@ -1,61 +1,108 @@
-# LogiSwift AI — Autonomous Logistics Handling Agent
+# LogiSwift AI — Shipment Recovery Demo
 
-A working hackathon prototype that demonstrates **Observe → Reason → Act → Verify → Learn** with auditable self-healing logistics scenarios.
+LogiSwift AI is a Streamlit multipage logistics simulation backed by SQLite. It has separate **Ops Console**, **Driver App**, **Agent Control Tower**, and **Road Routes** screens. Shipment state and audit events are shared between the screens.
 
-## Run
+## 1. Requirements
 
-```bash
-python -m venv .venv
-# Linux/macOS: source .venv/bin/activate
-# Windows PowerShell: .venv\\Scripts\\Activate.ps1
-pip install -r requirements.txt
-streamlit run app.py
-```
+- Python 3.10 or newer
+- Internet access to install packages
+- Google API keys are optional. The shipment workflow runs without them.
 
-Open the local Streamlit URL (usually http://localhost:8501).
+## 2. Install and start
 
-## Gemini incident analysis (optional)
+### Linux or macOS
 
-The recovery engine remains deterministic. To add an AI-generated explanation after an incident, set a Gemini API key in your shell before starting Streamlit:
+From the project folder:
 
 ```bash
-export GEMINI_API_KEY="your-new-restricted-key"
-streamlit run app.py
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
 ```
 
-In PowerShell, use `$env:GEMINI_API_KEY="your-new-restricted-key"` before `streamlit run app.py`. For Streamlit Community Cloud, add `GEMINI_API_KEY` under the app's **Secrets** settings. Never commit the Gemini key or expose it in frontend code. The default model is `gemini-3.8-flash`; set `GEMINI_MODEL` to override it. If the key is missing or Gemini is unavailable, the app continues with deterministic recovery and shows no AI analysis.
+### Windows PowerShell
 
-## Google Maps route view (optional)
+From the project folder:
 
-The **Route Map** tab displays approximate straight-line connections between the synthetic origin and destination cities. It does not calculate road routes or track shipments. Set a Google Maps JavaScript API key as `GOOGLE_MAPS_API_KEY` in your shell or Streamlit **Secrets**. Enable the Maps JavaScript API and restrict the key to that API and your app's HTTP referrers (for local use, `http://localhost:8501/*`). The browser can see a Maps JavaScript key, so HTTP referrer restrictions are essential. Maps requires billing to be enabled for the Google Cloud project.
+```powershell
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
+```
 
-## Demo (2 minutes)
+Open the local URL printed in the terminal, usually `http://localhost:8501`. Keep the terminal running while using the app. Use the left sidebar to switch between screens. The first launch creates `logiswift.db`; it stores local demo data and is ignored by Git.
 
-1. Select **Traffic delay**, click **Execute autonomous recovery**. First alternate route fails verification, second passes.
-2. Select **Vehicle breakdown**. Agent assigns simulated replacement vehicle and verifies ETA.
-3. Select **AI API outage**. Deterministic fallback restores agent operation without API credentials.
-4. Select **Unrecoverable incident**. Agent escalates instead of claiming an unsafe recovery.
-5. Open **Feedback & Audit** to show persistent SQLite history and strategy ranking based on previously verified outcomes.
-6. Use **Run all six demo scenarios** for metrics and charts.
+## 3. Run the full shipment demo
 
-## Architecture
+### Fast path: one-click breakdown simulation
 
-- `app.py`: Streamlit UI, demo controls, charts, audit download.
-- `engine.py`: deterministic incident diagnosis, action selection, verification, feedback ranking, SQLite persistence.
-- `gemini_analysis.py`: optional AI-generated incident explanation; it does not select or execute recovery actions.
-- `maps_view.py`: Google Maps display for the synthetic shipment city pairs.
-- `tests/test_engine.py`: pytest regression tests.
+1. Open **Ops Console**.
+2. Click **Create and run breakdown demo**. It creates a shipment, assigns a driver, starts the trip, reports a simulated vehicle breakdown, and applies the highest-ranked eligible replacement-driver choice.
+3. Open **Agent Control Tower**. Review the ranked recovery options. Choose a different eligible driver or vehicle if desired, then click **Apply selected recovery**. The shipment ID remains the same.
+4. Open **Driver App** and select the replacement driver shown in the Control Tower.
+5. Click **Start trip**, then **Mark delivered**.
+6. Return to the home page or Control Tower to review the updated shipment and audit events.
 
-## Tests
+The demo needs at least two available drivers. After a shipment is delivered, its driver becomes available again.
+
+### Manual path
+
+1. In **Ops Console**, create a shipment with pickup, destination, deadline, package type, and priority.
+2. Assign an available driver.
+3. In **Driver App**, select that driver and shipment, then click **Start trip**.
+4. Report an issue and provide a short description. A vehicle breakdown automatically triggers replacement-driver recovery; other issue types show their safe recommendation or dispatcher escalation.
+5. In **Agent Control Tower**, review the recommendations and apply a different eligible action, driver, or vehicle if needed.
+6. The selected driver starts the trip and marks the same shipment delivered.
+
+All roles and delivery actions are simulated. The app does not contact real drivers, customers, or shipment systems.
+
+## 4. Optional Gemini recommendations
+
+Gemini can rank the pre-approved recovery options. The deterministic app logic validates the available choices and performs the state change; Gemini cannot execute actions or invent driver IDs.
+
+Create `.streamlit/secrets.toml` in the project folder and add:
+
+```toml
+GEMINI_API_KEY = "your restricted Gemini API key"
+```
+
+The default model is `gemini-3.8-flash`. To select another supported model, set `GEMINI_MODEL` in your shell before starting Streamlit. If the key is missing or the Gemini request fails, the app uses rules-based recommendations and the shipment simulation still works.
+
+## 5. Optional Google road routes
+
+Add your restricted Maps JavaScript key to the same `.streamlit/secrets.toml` file:
+
+```toml
+GOOGLE_MAPS_API_KEY = "your restricted Maps JavaScript API key"
+```
+
+For route alternatives, the Google Cloud project must have billing enabled and both the **Maps JavaScript API** and **Routes API** enabled. Restrict the browser key to those APIs and your app’s HTTP referrers, such as `http://localhost:8501/*` and `http://127.0.0.1:8501/*` for local use. The browser can see this key, so keep its referrer and API restrictions enabled.
+
+Open **Road Routes**, choose a shipment, and select among the route cards shown under the map. Google computes driving routes between the shipment’s city endpoints; these are route estimates, not live vehicle tracking. Google may return fewer alternatives than requested. See Google’s [Routes setup guide](https://developers.google.com/maps/documentation/javascript/routes/start) and [alternative routes guide](https://developers.google.com/maps/documentation/javascript/routes/get-alternative-routes).
+
+If the map reports an API error, verify the key restrictions, enabled APIs, billing, and the referrer for the exact local URL you opened. The shipment and driver screens do not depend on Maps.
+
+## 6. Run tests
+
+Activate the virtual environment first, then run:
 
 ```bash
-pytest -q
+python -m pytest -q
 ```
 
-## Performance & truthfulness
+The tests use in-memory SQLite. They do not send requests to Gemini or Google Maps.
 
-Agent runtime measures the **local simulated decision engine only**, not network latency or real-world delivery time. Shipments, routes, deadlines, vehicle assignments and outcomes are synthetic. The self-healing feedback loop changes the **ranking of known strategies** using verified successes; it does **not** retrain an AI model. Optional Gemini analysis provides an advisory explanation, and Google Maps displays the synthetic city pairs; neither controls recovery or provides live logistics data. There are no real notifications or actual rerouting. The base deterministic demo still runs without API keys after dependency installation.
+## Project files
 
-## Submission pitch
-
-> LogiSwift AI is a self-healing logistics operations agent. Instead of stopping at alert generation, it diagnoses disruptions, selects corrective actions, verifies outcomes, learns which strategies have worked before, and safely escalates when automated recovery is impossible. The demo provides a reproducible, auditable execution trace and runtime metrics without external dependencies.
+- `app.py`: shared home page and shipment overview.
+- `pages/1_Ops_Console.py`: create shipments, assign drivers, run the quick demo.
+- `pages/2_Driver_App.py`: start trips, report issues, mark delivery.
+- `pages/3_Agent_Control_Tower.py`: review/change recovery options and inspect audit events.
+- `pages/4_Route_Map.py`, `maps_view.py`: Google Maps road routes and selectable alternatives.
+- `engine.py`: shipment lifecycle, recovery policy, driver availability, SQLite, and audit events.
+- `gemini_analysis.py`: optional constrained Gemini ranking and incident analysis.
+- `tests/test_engine.py`: recovery and shipment lifecycle tests.

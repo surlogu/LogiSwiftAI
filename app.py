@@ -1,143 +1,36 @@
-import json
-import os
-import streamlit as st
 import pandas as pd
-import plotly.express as px
-from engine import SCENARIOS, connect, history, recover, sample_shipments
-from gemini_analysis import analyze_incident
-from maps_view import show_shipment_map
+import streamlit as st
 
-st.set_page_config(page_title='LogiSwift AI | Autonomous Control Tower',page_icon='🚚',layout='wide')
-st.markdown('''<style>
-:root { color-scheme: dark; }
-.stApp { background: #0b1220; color: #e8eef7; }
-.block-container { padding-top: 2rem; }
-h1, h2, h3, h4 { color: #f8fafc !important; }
-p, [data-testid="stMarkdownContainer"] { color: #dbe5f2; }
-[data-testid="stCaptionContainer"],
-[data-testid="stCaptionContainer"] *,
-[data-testid="stWidgetLabel"],
-[data-testid="stWidgetLabel"] *,
-label, label * { color: #cbd5e1 !important; opacity: 1 !important; }
-[data-testid="stMetric"] {
-  background: #172238;
-  border: 1px solid #3a4b67;
-  border-radius: 14px;
-  padding: 15px;
-}
-[data-testid="stMetricLabel"], [data-testid="stMetricLabel"] *,
-[data-testid="stMetricValue"], [data-testid="stMetricValue"] * {
-  color: #f1f5f9 !important;
-  opacity: 1 !important;
-}
-[data-testid="stTabs"] button[data-baseweb="tab"] { color: #cbd5e1 !important; }
-[data-testid="stTabs"] button[data-baseweb="tab"][aria-selected="true"] {
-  color: #ffffff !important;
-}
-[data-testid="stAlert"] p, [data-testid="stAlert"] [data-testid="stMarkdownContainer"] {
-  color: #e2e8f0 !important;
-}
-[data-testid="stBaseButton-secondary"] {
-  background: #24334a;
-  border: 1px solid #475a77;
-  color: #f8fafc !important;
-}
-[data-testid="stBaseButton-secondary"] * { color: #f8fafc !important; }
-</style>''',unsafe_allow_html=True)
+from engine import connect, history, shipment_workflows
+from ui_common import configure_page
+
+
+configure_page('LogiSwift AI | Control Tower', '🚚')
 st.title('🚚 LogiSwift AI')
-st.caption('Autonomous Logistics Control Tower • Observe → Reason → Act → Verify → Learn • Simulation demo')
-conn=connect()
-records=history(conn)
-shipments=sample_shipments()
-recovered=sum(r['status']=='RECOVERED' for r in records)
-c1,c2,c3,c4=st.columns(4)
-c1.metric('Shipments monitored',len(shipments))
-c2.metric('Incidents processed',len(records))
-c3.metric('Recovery rate',f'{recovered/len(records)*100:.0f}%' if records else '—')
-c4.metric('Avg agent runtime',f'{sum(r["latency_ms"] for r in records)/len(records):.2f} ms' if records else '—')
+st.caption('Autonomous shipment recovery demo · shared SQLite workflow · Streamlit multipage app')
+st.markdown('Use the separate pages in the left sidebar to act as **Operations**, **Driver**, or **Agent Control Tower**. Each screen reads and updates the same shipment records.')
 
-tab1,tab2,tab3,tab4=st.tabs(['⚡ Autonomous Agent','📦 Shipments','🗺️ Route Map','📊 Feedback & Audit'])
-with tab1:
-    st.subheader('Simulate an incident and watch self-healing')
-    a,b=st.columns(2)
-    with a: scenario=st.selectbox('Failure scenario',list(SCENARIOS))
-    with b: shipment=st.selectbox('Shipment ID',[s['Shipment'] for s in shipments])
-    st.info('Actions are simulated. Recovery is accepted only when the verification rule passes. No live routes, drivers, or notifications are changed.')
-    if st.button('🚀 Execute autonomous recovery',type='primary',use_container_width=True):
-        result=recover(shipment,scenario,conn)
-        st.session_state['last_result']=result
-        st.session_state['gemini_batch_notice']=False
-        api_key=os.getenv('GEMINI_API_KEY')
-        if not api_key:
-            try: api_key=st.secrets.get('GEMINI_API_KEY')
-            except Exception: api_key=None
-        st.session_state['gemini_configured']=bool(api_key)
-        simulated_ai_outage=scenario=='AI API outage'
-        st.session_state['gemini_skipped_for_outage']=simulated_ai_outage
-        if simulated_ai_outage:
-            analysis, gemini_error = None, None
-        else:
-            analysis, gemini_error = analyze_incident(scenario,result,api_key)
-        st.session_state['last_gemini_analysis']=analysis
-        st.session_state['last_gemini_error']=gemini_error
-        st.rerun()
-    if st.button('▶ Run all six demo scenarios',use_container_width=True):
-        for i,s in enumerate(SCENARIOS): recover(f'LS{1001+i}',s,conn)
-        st.session_state['last_result']=None
-        st.session_state['last_gemini_analysis']=None
-        st.session_state['last_gemini_error']=None
-        st.session_state['gemini_configured']=False
-        st.session_state['gemini_skipped_for_outage']=False
-        st.session_state['gemini_batch_notice']=True
-        st.rerun()
-    if st.session_state.get('gemini_batch_notice',False):
-        st.info('All six demo scenarios were recorded. Gemini analysis runs for a single incident; use “Execute autonomous recovery” to request it.')
-    result=st.session_state.get('last_result')
-    if result:
-        (st.success if result['status']=='RECOVERED' else st.warning)(f"{result['status']} | {result['attempts']} action(s) | {result['latency_ms']} ms")
-        for i,event in enumerate(result['timeline'],1):
-            icon='✅' if event.get('verified') else '🔄' if event.get('verified') is False else '🔹'
-            st.markdown(f"**{icon} {i}. {event['stage']}** — {event.get('action','')} {event['detail']}")
-        st.subheader('Gemini incident analysis')
-        analysis=st.session_state.get('last_gemini_analysis')
-        if analysis:
-            st.write(analysis)
-            st.caption('AI-generated advisory based on the simulated event log. Recovery decisions and verification remain deterministic.')
-        elif st.session_state.get('gemini_skipped_for_outage',False):
-            st.info('Gemini analysis was skipped because this scenario simulates an AI API outage.')
-        elif st.session_state.get('gemini_configured',False):
-            detail=st.session_state.get('last_gemini_error') or 'No diagnostic was recorded for this result. Click “Execute autonomous recovery” to make a fresh Gemini request.'
-            st.warning(f'Gemini analysis failed: {detail} The deterministic recovery result is unchanged.')
-        else:
-            st.info('Set GEMINI_API_KEY to enable Gemini analysis. Recovery works without it.')
-with tab2:
-    df=pd.DataFrame(shipments)
-    st.dataframe(df,use_container_width=True,hide_index=True)
-    chart=px.histogram(df,x='Status',color='Priority',barmode='group',title='Shipment status by priority',template='plotly_dark')
-    st.plotly_chart(chart,use_container_width=True)
-with tab3:
-    st.subheader('Simulated shipment route')
-    map_shipment_id=st.selectbox('Shipment to display',[s['Shipment'] for s in shipments],key='map_shipment')
-    map_shipment=next(s for s in shipments if s['Shipment']==map_shipment_id)
-    st.caption(f"{map_shipment['Origin']} → {map_shipment['Destination']} • Approximate city-to-city line for demo data; this is not a road route or live tracking.")
-    maps_key=os.getenv('GOOGLE_MAPS_API_KEY')
-    if not maps_key:
-        try: maps_key=st.secrets.get('GOOGLE_MAPS_API_KEY')
-        except Exception: maps_key=None
-    if maps_key:
-        show_shipment_map(map_shipment,maps_key)
-    else:
-        st.info('Set GOOGLE_MAPS_API_KEY to load the Google map. Shipment data remains synthetic.')
-with tab4:
-    records=history(conn)
-    if records:
-        audit=pd.DataFrame([{k:v for k,v in r.items() if k!='timeline'} for r in records])
-        st.dataframe(audit,use_container_width=True,hide_index=True)
-        st.subheader('Verified recovery feedback')
-        outcomes=pd.DataFrame([{'Scenario':r['scenario'],'Outcome':r['status']} for r in records])
-        st.plotly_chart(px.histogram(outcomes,x='Scenario',color='Outcome',barmode='group',template='plotly_dark'),use_container_width=True)
-        selected=st.selectbox('Inspect audit trail', [r['id'] for r in records])
-        st.json(json.loads(next(r['timeline'] for r in records if r['id']==selected)))
-        st.download_button('Download audit CSV',audit.to_csv(index=False).encode(),file_name='logiswift_audit.csv',mime='text/csv')
-    else: st.info('Run an incident to populate the audit log.')
+conn=connect()
+shipments=shipment_workflows(conn)
+incidents=history(conn)
+delivered=sum(item['Lifecycle']=='DELIVERED' for item in shipments)
+reassigned=sum(item['Lifecycle']=='DRIVER_REASSIGNED' for item in shipments)
+reported=sum(bool(item['Issue'] and item['Issue']!='No issue') for item in shipments)
+a,b,c,d=st.columns(4)
+a.metric('Shipments',len(shipments))
+b.metric('Issues reported',reported)
+c.metric('Drivers reassigned',reassigned)
+d.metric('Delivered',delivered)
+
+st.subheader('Current shipment board')
+if shipments:
+    board=pd.DataFrame(shipments)
+    st.dataframe(board[['Shipment','Vendor','Origin','Destination','Deadline','Package','Status','Lifecycle','Driver','Vehicle','Issue','Agent decision']],use_container_width=True,hide_index=True)
+else:
+    st.info('No vendor shipments have been created yet. Open Ops Console to add one.')
+
+st.subheader('Quick demo')
+st.write('In Ops Console, click **Create and run breakdown demo**. It creates and assigns a shipment, starts the trip, reports a vehicle breakdown, and applies the first safe replacement-driver recommendation. Then inspect or change the driver in Agent Control Tower, continue the trip in Driver App, and mark it delivered.')
+if incidents:
+    st.caption(f"{len(incidents)} deterministic simulation incident(s) are in the audit history. Gemini recommendations are optional and never execute actions on their own.")
 conn.close()

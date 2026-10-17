@@ -1,6 +1,8 @@
 """Optional Gemini incident analysis; recovery decisions stay in engine.py."""
 
 import os
+import json
+import re
 
 
 def analyze_incident(scenario, result, api_key):
@@ -44,3 +46,40 @@ Recorded event timeline: {result['timeline']}
         else:
             detail = f"Gemini request failed ({type(exc).__name__}). Check network access and the installed Gemini client."
         return None, detail
+
+
+def recommend_options(issue, shipment_id, options, api_key):
+    """Rank only pre-validated recovery choices; never lets Gemini execute or invent an action."""
+    safe_options = [dict(option) for option in options]
+    if not safe_options or not api_key:
+        return safe_options, 'Rules-based recommendations (Gemini unavailable or not configured).'
+    try:
+        from google import genai
+
+        client = genai.Client(api_key=api_key)
+        model = os.getenv('GEMINI_MODEL', 'gemini-3.8-flash')
+        prompt = f"""You rank safe, pre-approved logistics recovery candidates. Do not invent candidates or claim live data.
+Return JSON only with this shape: {{"ranked_ids":["candidate-id",...],"reasons":{{"candidate-id":"short reason"}}}}.
+Include each provided id exactly once. Incident: {issue}. Shipment: {shipment_id}.
+Candidates: {json.dumps(safe_options)}"""
+        response = client.models.generate_content(model=model, contents=prompt)
+        raw = (response.text or '').strip()
+        match = re.search(r'\{.*\}', raw, flags=re.DOTALL)
+        payload = json.loads(match.group(0)) if match else None
+        allowed = {item['id'] for item in safe_options}
+        ranked = [item for item in (payload or {}).get('ranked_ids', []) if item in allowed]
+        ranked.extend(item['id'] for item in safe_options if item['id'] not in ranked)
+        reasons = (payload or {}).get('reasons', {})
+        by_id = {item['id']: item for item in safe_options}
+        result = []
+        for rank, option_id in enumerate(ranked, 1):
+            option = by_id[option_id]
+            reason = reasons.get(option_id)
+            if isinstance(reason, str) and reason.strip():
+                option['reason'] = reason.strip()[:240]
+            option['rank'] = rank
+            option['source'] = 'Gemini-ranked, policy-validated'
+            result.append(option)
+        return result, None
+    except Exception as exc:
+        return safe_options, f'Gemini ranking failed ({type(exc).__name__}); rules-based order is shown.'
